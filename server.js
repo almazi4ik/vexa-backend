@@ -14,12 +14,14 @@ const supabase = createClient(
   process.env.SUPABASE_KEY
 );
 
+// Middleware для авторизации
 const auth = async (req, res, next) => {
   const token = req.headers.authorization?.split(' ')[1];
   if (!token) return res.status(401).json({ error: 'Нет токена' });
   try {
     const decoded = jwt.verify(token, process.env.JWT_SECRET || 'secret_key');
     req.userId = decoded.userId;
+    // Обновляем статус онлайн
     await supabase
       .from('users')
       .update({ lastseen: new Date(), isonline: true })
@@ -38,6 +40,7 @@ app.post('/api/auth/register', async (req, res) => {
     if (!emailRegex.test(email)) {
       return res.status(400).json({ error: 'Введите настоящий email' });
     }
+    // Проверка существующего пользователя
     const { data: existing } = await supabase
       .from('users')
       .select('userid')
@@ -95,13 +98,16 @@ app.post('/api/auth/login', async (req, res) => {
   }
 });
 
-// Остальные маршруты (выход, пользователи, профиль, друзья, сообщения) — нужно везде использовать маленькие буквы: userid, displayname, customnames, isonline, lastseen, createdat, isread
-
+// Выход
 app.post('/api/auth/logout', auth, async (req, res) => {
-  await supabase.from('users').update({ isonline: false }).eq('userid', req.userId);
+  await supabase
+    .from('users')
+    .update({ isonline: false })
+    .eq('userid', req.userId);
   res.json({ ok: true });
 });
 
+// Получить всех пользователей
 app.get('/api/users', auth, async (req, res) => {
   const { data: users, error } = await supabase
     .from('users')
@@ -110,6 +116,7 @@ app.get('/api/users', auth, async (req, res) => {
   res.json(users);
 });
 
+// Обновить профиль
 app.put('/api/users/profile', auth, async (req, res) => {
   const { displayName, username, bio, avatar } = req.body;
   const { data: existing } = await supabase
@@ -133,6 +140,7 @@ app.put('/api/users/profile', auth, async (req, res) => {
   res.json(user);
 });
 
+// Добавить/удалить друга
 app.post('/api/users/friends', auth, async (req, res) => {
   const { friendId, action } = req.body;
   const { data: user } = await supabase
@@ -146,10 +154,14 @@ app.post('/api/users/friends', auth, async (req, res) => {
   } else if (action === 'remove') {
     friends = friends.filter(id => id !== friendId);
   }
-  await supabase.from('users').update({ friends }).eq('userid', req.userId);
+  await supabase
+    .from('users')
+    .update({ friends })
+    .eq('userid', req.userId);
   res.json({ friends });
 });
 
+// Установить своё имя для друга
 app.post('/api/users/custom-name', auth, async (req, res) => {
   const { friendId, customName } = req.body;
   const { data: user } = await supabase
@@ -159,16 +171,21 @@ app.post('/api/users/custom-name', auth, async (req, res) => {
     .single();
   let customnames = user.customnames || {};
   customnames[friendId] = customName;
-  await supabase.from('users').update({ customnames }).eq('userid', req.userId);
+  await supabase
+    .from('users')
+    .update({ customnames })
+    .eq('userid', req.userId);
   res.json({ customnames });
 });
 
+// Получить сообщения
 app.get('/api/messages', auth, async (req, res) => {
   const { data: messages, error } = await supabase
     .from('messages')
     .select('*')
     .or(`from_user.eq.${req.userId},to_user.eq.${req.userId}`);
   if (error) return res.status(500).json({ error: error.message });
+  // преобразуем в формат, который ожидает фронтенд
   res.json(messages.map(m => ({
     id: m.id,
     from: m.from_user,
@@ -179,6 +196,7 @@ app.get('/api/messages', auth, async (req, res) => {
   })));
 });
 
+// Отправить сообщение
 app.post('/api/messages', auth, async (req, res) => {
   const { to, text } = req.body;
   const { data: user } = await supabase
@@ -187,6 +205,7 @@ app.post('/api/messages', auth, async (req, res) => {
     .eq('userid', req.userId)
     .single();
   const isFriend = user.friends?.includes(to);
+  // Не друзья: проверяем, что последнее сообщение от нас, а собеседник не ответил
   if (!isFriend && to !== req.userId) {
     const { data: lastFromReceiver } = await supabase
       .from('messages')
@@ -202,7 +221,7 @@ app.post('/api/messages', auth, async (req, res) => {
       .eq('to_user', to)
       .order('createdat', { ascending: false })
       .limit(1);
-    if (lastFromMe && lastFromMe.length > 0 && (!lastFromReceiver || lastFromReceiver.length === 0 || lastFromReceiver[0].createdat < lastFromMe[0].createdat)) {
+    if (lastFromMe && lastFromMe.length > 0 && (!lastFromReceiver || lastFromReceiver.length === 0 || new Date(lastFromReceiver[0].createdat) < new Date(lastFromMe[0].createdat))) {
       return res.status(400).json({ error: 'Пользователь должен ответить на ваше предыдущее сообщение' });
     }
   }
@@ -222,6 +241,7 @@ app.post('/api/messages', auth, async (req, res) => {
   });
 });
 
+// Отметить сообщения как прочитанные
 app.post('/api/messages/read', auth, async (req, res) => {
   const { from } = req.body;
   await supabase
@@ -233,6 +253,7 @@ app.post('/api/messages/read', auth, async (req, res) => {
   res.json({ ok: true });
 });
 
+// Получить статусы пользователей
 app.get('/api/status', auth, async (req, res) => {
   const { data: users, error } = await supabase
     .from('users')
