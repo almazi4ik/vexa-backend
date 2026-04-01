@@ -14,7 +14,6 @@ const supabase = createClient(
   process.env.SUPABASE_KEY
 );
 
-// Middleware авторизации
 const auth = async (req, res, next) => {
   const token = req.headers.authorization?.split(' ')[1];
   if (!token) return res.status(401).json({ error: 'Нет токена' });
@@ -58,8 +57,6 @@ app.post('/api/auth/register', async (req, res) => {
         password: hashed,
         bio: '',
         avatar: '',
-        friends: [],
-        customnames: {}
       }])
       .select()
       .single();
@@ -104,7 +101,7 @@ app.post('/api/auth/logout', auth, async (req, res) => {
 app.get('/api/users', auth, async (req, res) => {
   const { data: users, error } = await supabase
     .from('users')
-    .select('userid, displayname, username, bio, avatar, lastseen, isonline, friends, customnames');
+    .select('userid, displayname, username, bio, avatar, lastseen, isonline');
   if (error) return res.status(500).json({ error: error.message });
   res.json(users);
 });
@@ -132,42 +129,13 @@ app.put('/api/users/profile', auth, async (req, res) => {
   res.json(user);
 });
 
-app.post('/api/users/friends', auth, async (req, res) => {
-  const { friendId, action } = req.body;
-  const { data: user } = await supabase
-    .from('users')
-    .select('friends')
-    .eq('userid', req.userId)
-    .single();
-  let friends = user.friends || [];
-  if (action === 'add' && !friends.includes(friendId)) {
-    friends.push(friendId);
-  } else if (action === 'remove') {
-    friends = friends.filter(id => id !== friendId);
-  }
-  await supabase.from('users').update({ friends }).eq('userid', req.userId);
-  res.json({ friends });
-});
-
-app.post('/api/users/custom-name', auth, async (req, res) => {
-  const { friendId, customName } = req.body;
-  const { data: user } = await supabase
-    .from('users')
-    .select('customnames')
-    .eq('userid', req.userId)
-    .single();
-  let customnames = user.customnames || {};
-  customnames[friendId] = customName;
-  await supabase.from('users').update({ customnames }).eq('userid', req.userId);
-  res.json({ customnames });
-});
-
-// ========== СООБЩЕНИЯ ==========
+// ========== СООБЩЕНИЯ (личные) ==========
 app.get('/api/messages', auth, async (req, res) => {
   const { data: messages, error } = await supabase
     .from('messages')
     .select('*')
-    .or(`from_user.eq.${req.userId},to_user.eq.${req.userId}`);
+    .or(`from_user.eq.${req.userId},to_user.eq.${req.userId}`)
+    .eq('is_channel', false);
   if (error) return res.status(500).json({ error: error.message });
   res.json(messages.map(m => ({
     id: m.id,
@@ -182,34 +150,9 @@ app.get('/api/messages', auth, async (req, res) => {
 
 app.post('/api/messages', auth, async (req, res) => {
   const { to, text, image } = req.body;
-  const { data: user } = await supabase
-    .from('users')
-    .select('friends')
-    .eq('userid', req.userId)
-    .single();
-  const isFriend = user.friends?.includes(to);
-  if (!isFriend && to !== req.userId) {
-    const { data: lastFromReceiver } = await supabase
-      .from('messages')
-      .select('*')
-      .eq('from_user', to)
-      .eq('to_user', req.userId)
-      .order('createdat', { ascending: false })
-      .limit(1);
-    const { data: lastFromMe } = await supabase
-      .from('messages')
-      .select('*')
-      .eq('from_user', req.userId)
-      .eq('to_user', to)
-      .order('createdat', { ascending: false })
-      .limit(1);
-    if (lastFromMe && lastFromMe.length > 0 && (!lastFromReceiver || lastFromReceiver.length === 0 || new Date(lastFromReceiver[0].createdat) < new Date(lastFromMe[0].createdat))) {
-      return res.status(400).json({ error: 'Пользователь должен ответить на ваше предыдущее сообщение' });
-    }
-  }
   const { data: msg, error } = await supabase
     .from('messages')
-    .insert([{ from_user: req.userId, to_user: to, text, image }])
+    .insert([{ from_user: req.userId, to_user: to, text, image, is_channel: false }])
     .select()
     .single();
   if (error) return res.status(500).json({ error: error.message });
@@ -235,59 +178,123 @@ app.post('/api/messages/read', auth, async (req, res) => {
   res.json({ ok: true });
 });
 
-// 🆕 РЕДАКТИРОВАНИЕ СООБЩЕНИЯ
 app.put('/api/messages/:id', auth, async (req, res) => {
   const { id } = req.params;
   const { text } = req.body;
-  const { data: msg } = await supabase
-    .from('messages')
-    .select('*')
-    .eq('id', id)
-    .single();
+  const { data: msg } = await supabase.from('messages').select('*').eq('id', id).single();
   if (!msg) return res.status(404).json({ error: 'Сообщение не найдено' });
   if (msg.from_user !== req.userId) return res.status(403).json({ error: 'Нельзя редактировать чужое сообщение' });
-  await supabase
-    .from('messages')
-    .update({ text })
-    .eq('id', id);
+  await supabase.from('messages').update({ text }).eq('id', id);
   res.json({ ok: true });
 });
 
-// 🆕 УДАЛЕНИЕ СООБЩЕНИЯ
 app.delete('/api/messages/:id', auth, async (req, res) => {
   const { id } = req.params;
-  const { data: msg } = await supabase
-    .from('messages')
-    .select('*')
-    .eq('id', id)
-    .single();
+  const { data: msg } = await supabase.from('messages').select('*').eq('id', id).single();
   if (!msg) return res.status(404).json({ error: 'Сообщение не найдено' });
   if (msg.from_user !== req.userId) return res.status(403).json({ error: 'Нельзя удалить чужое сообщение' });
+  await supabase.from('messages').delete().eq('id', id);
+  res.json({ ok: true });
+});
+
+// 🆕 ОЧИСТКА ЧАТА
+app.delete('/api/messages/clear/:userId', auth, async (req, res) => {
+  const { userId } = req.params;
   await supabase
     .from('messages')
     .delete()
-    .eq('id', id);
+    .or(`and(from_user.eq.${req.userId},to_user.eq.${userId}),and(from_user.eq.${userId},to_user.eq.${req.userId})`);
   res.json({ ok: true });
 });
 
-// 🆕 СТАТУС "ПЕЧАТАЕТ" (заглушка — храним в памяти)
-const typingUsers = {};
-app.post('/api/typing/:to', auth, (req, res) => {
-  const { to } = req.params;
-  typingUsers[to] = { from: req.userId, time: Date.now() };
+// ========== КАНАЛЫ ==========
+app.get('/api/channels', auth, async (req, res) => {
+  const { data: channels, error } = await supabase
+    .from('channels')
+    .select('*');
+  if (error) return res.status(500).json({ error: error.message });
+  res.json(channels);
+});
+
+app.post('/api/channels', auth, async (req, res) => {
+  const { name, description, avatar } = req.body;
+  const { data: channel, error } = await supabase
+    .from('channels')
+    .insert([{ name, description, avatar, owner_id: req.userId }])
+    .select()
+    .single();
+  if (error) return res.status(500).json({ error: error.message });
+  await supabase
+    .from('channel_subscribers')
+    .insert([{ channel_id: channel.id, user_id: req.userId, role: 'owner' }]);
+  res.json(channel);
+});
+
+app.post('/api/channels/:id/subscribe', auth, async (req, res) => {
+  const { id } = req.params;
+  const { data: existing } = await supabase
+    .from('channel_subscribers')
+    .select('*')
+    .eq('channel_id', id)
+    .eq('user_id', req.userId);
+  if (existing && existing.length > 0) return res.json({ ok: true });
+  await supabase
+    .from('channel_subscribers')
+    .insert([{ channel_id: id, user_id: req.userId, role: 'subscriber' }]);
   res.json({ ok: true });
 });
-app.post('/api/typing/stop/:to', auth, (req, res) => {
-  const { to } = req.params;
-  if (typingUsers[to] && typingUsers[to].from === req.userId) {
-    delete typingUsers[to];
-  }
+
+// Сообщения каналов
+app.get('/api/channels/:id/messages', auth, async (req, res) => {
+  const { id } = req.params;
+  const { data: messages, error } = await supabase
+    .from('messages')
+    .select('*')
+    .eq('channel_id', id)
+    .eq('is_channel', true)
+    .order('createdat', { ascending: true });
+  if (error) return res.status(500).json({ error: error.message });
+  res.json(messages);
+});
+
+app.post('/api/channels/:id/messages', auth, async (req, res) => {
+  const { id } = req.params;
+  const { text, image } = req.body;
+  const { data: msg, error } = await supabase
+    .from('messages')
+    .insert([{ from_user: req.userId, text, image, is_channel: true, channel_id: id }])
+    .select()
+    .single();
+  if (error) return res.status(500).json({ error: error.message });
+  res.json(msg);
+});
+
+// ========== БАНЫ ==========
+app.post('/api/bans', auth, async (req, res) => {
+  const { userId, reason } = req.body;
+  await supabase
+    .from('banned_users')
+    .insert([{ user_id: userId, banned_by: req.userId, reason }]);
   res.json({ ok: true });
 });
-app.get('/api/typing/:userId', auth, (req, res) => {
+
+app.delete('/api/bans/:userId', auth, async (req, res) => {
   const { userId } = req.params;
-  const typing = typingUsers[userId] && (Date.now() - typingUsers[userId].time < 3000);
-  res.json({ typing });
+  await supabase
+    .from('banned_users')
+    .delete()
+    .eq('user_id', userId)
+    .eq('banned_by', req.userId);
+  res.json({ ok: true });
+});
+
+app.get('/api/bans', auth, async (req, res) => {
+  const { data: bans, error } = await supabase
+    .from('banned_users')
+    .select('*')
+    .eq('banned_by', req.userId);
+  if (error) return res.status(500).json({ error: error.message });
+  res.json(bans);
 });
 
 // ========== СТАТУСЫ ==========
