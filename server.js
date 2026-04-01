@@ -14,6 +14,7 @@ const supabase = createClient(
   process.env.SUPABASE_KEY
 );
 
+// Middleware авторизации
 const auth = async (req, res, next) => {
   const token = req.headers.authorization?.split(' ')[1];
   if (!token) return res.status(401).json({ error: 'Нет токена' });
@@ -30,6 +31,7 @@ const auth = async (req, res, next) => {
   }
 };
 
+// ========== АВТОРИЗАЦИЯ ==========
 app.post('/api/auth/register', async (req, res) => {
   try {
     const { displayName, username, email, password } = req.body;
@@ -94,13 +96,11 @@ app.post('/api/auth/login', async (req, res) => {
 });
 
 app.post('/api/auth/logout', auth, async (req, res) => {
-  await supabase
-    .from('users')
-    .update({ isonline: false })
-    .eq('userid', req.userId);
+  await supabase.from('users').update({ isonline: false }).eq('userid', req.userId);
   res.json({ ok: true });
 });
 
+// ========== ПОЛЬЗОВАТЕЛИ ==========
 app.get('/api/users', auth, async (req, res) => {
   const { data: users, error } = await supabase
     .from('users')
@@ -145,10 +145,7 @@ app.post('/api/users/friends', auth, async (req, res) => {
   } else if (action === 'remove') {
     friends = friends.filter(id => id !== friendId);
   }
-  await supabase
-    .from('users')
-    .update({ friends })
-    .eq('userid', req.userId);
+  await supabase.from('users').update({ friends }).eq('userid', req.userId);
   res.json({ friends });
 });
 
@@ -161,13 +158,11 @@ app.post('/api/users/custom-name', auth, async (req, res) => {
     .single();
   let customnames = user.customnames || {};
   customnames[friendId] = customName;
-  await supabase
-    .from('users')
-    .update({ customnames })
-    .eq('userid', req.userId);
+  await supabase.from('users').update({ customnames }).eq('userid', req.userId);
   res.json({ customnames });
 });
 
+// ========== СООБЩЕНИЯ ==========
 app.get('/api/messages', auth, async (req, res) => {
   const { data: messages, error } = await supabase
     .from('messages')
@@ -179,13 +174,14 @@ app.get('/api/messages', auth, async (req, res) => {
     from: m.from_user,
     to: m.to_user,
     text: m.text,
+    image: m.image,
     createdAt: m.createdat,
     isRead: m.isread
   })));
 });
 
 app.post('/api/messages', auth, async (req, res) => {
-  const { to, text } = req.body;
+  const { to, text, image } = req.body;
   const { data: user } = await supabase
     .from('users')
     .select('friends')
@@ -213,7 +209,7 @@ app.post('/api/messages', auth, async (req, res) => {
   }
   const { data: msg, error } = await supabase
     .from('messages')
-    .insert([{ from_user: req.userId, to_user: to, text }])
+    .insert([{ from_user: req.userId, to_user: to, text, image }])
     .select()
     .single();
   if (error) return res.status(500).json({ error: error.message });
@@ -222,6 +218,7 @@ app.post('/api/messages', auth, async (req, res) => {
     from: msg.from_user,
     to: msg.to_user,
     text: msg.text,
+    image: msg.image,
     createdAt: msg.createdat,
     isRead: msg.isread
   });
@@ -238,6 +235,62 @@ app.post('/api/messages/read', auth, async (req, res) => {
   res.json({ ok: true });
 });
 
+// 🆕 РЕДАКТИРОВАНИЕ СООБЩЕНИЯ
+app.put('/api/messages/:id', auth, async (req, res) => {
+  const { id } = req.params;
+  const { text } = req.body;
+  const { data: msg } = await supabase
+    .from('messages')
+    .select('*')
+    .eq('id', id)
+    .single();
+  if (!msg) return res.status(404).json({ error: 'Сообщение не найдено' });
+  if (msg.from_user !== req.userId) return res.status(403).json({ error: 'Нельзя редактировать чужое сообщение' });
+  await supabase
+    .from('messages')
+    .update({ text })
+    .eq('id', id);
+  res.json({ ok: true });
+});
+
+// 🆕 УДАЛЕНИЕ СООБЩЕНИЯ
+app.delete('/api/messages/:id', auth, async (req, res) => {
+  const { id } = req.params;
+  const { data: msg } = await supabase
+    .from('messages')
+    .select('*')
+    .eq('id', id)
+    .single();
+  if (!msg) return res.status(404).json({ error: 'Сообщение не найдено' });
+  if (msg.from_user !== req.userId) return res.status(403).json({ error: 'Нельзя удалить чужое сообщение' });
+  await supabase
+    .from('messages')
+    .delete()
+    .eq('id', id);
+  res.json({ ok: true });
+});
+
+// 🆕 СТАТУС "ПЕЧАТАЕТ" (заглушка — храним в памяти)
+const typingUsers = {};
+app.post('/api/typing/:to', auth, (req, res) => {
+  const { to } = req.params;
+  typingUsers[to] = { from: req.userId, time: Date.now() };
+  res.json({ ok: true });
+});
+app.post('/api/typing/stop/:to', auth, (req, res) => {
+  const { to } = req.params;
+  if (typingUsers[to] && typingUsers[to].from === req.userId) {
+    delete typingUsers[to];
+  }
+  res.json({ ok: true });
+});
+app.get('/api/typing/:userId', auth, (req, res) => {
+  const { userId } = req.params;
+  const typing = typingUsers[userId] && (Date.now() - typingUsers[userId].time < 3000);
+  res.json({ typing });
+});
+
+// ========== СТАТУСЫ ==========
 app.get('/api/status', auth, async (req, res) => {
   const { data: users, error } = await supabase
     .from('users')
