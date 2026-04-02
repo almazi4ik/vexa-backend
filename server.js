@@ -129,42 +129,26 @@ app.put('/api/users/profile', auth, async (req, res) => {
   res.json(user);
 });
 
-// ========== СООБЩЕНИЯ (личные) ==========
+// ========== ЛИЧНЫЕ СООБЩЕНИЯ ==========
 app.get('/api/messages', auth, async (req, res) => {
   const { data: messages, error } = await supabase
     .from('messages')
     .select('*')
     .or(`from_user.eq.${req.userId},to_user.eq.${req.userId}`)
-    .eq('is_channel', false);
+    .is('group_id', null);
   if (error) return res.status(500).json({ error: error.message });
-  res.json(messages.map(m => ({
-    id: m.id,
-    from: m.from_user,
-    to: m.to_user,
-    text: m.text,
-    image: m.image,
-    createdAt: m.createdat,
-    isRead: m.isread
-  })));
+  res.json(messages);
 });
 
 app.post('/api/messages', auth, async (req, res) => {
   const { to, text, image } = req.body;
   const { data: msg, error } = await supabase
     .from('messages')
-    .insert([{ from_user: req.userId, to_user: to, text, image, is_channel: false }])
+    .insert([{ from_user: req.userId, to_user: to, text, image, is_group: false }])
     .select()
     .single();
   if (error) return res.status(500).json({ error: error.message });
-  res.json({
-    id: msg.id,
-    from: msg.from_user,
-    to: msg.to_user,
-    text: msg.text,
-    image: msg.image,
-    createdAt: msg.createdat,
-    isRead: msg.isread
-  });
+  res.json(msg);
 });
 
 app.post('/api/messages/read', auth, async (req, res) => {
@@ -181,23 +165,16 @@ app.post('/api/messages/read', auth, async (req, res) => {
 app.put('/api/messages/:id', auth, async (req, res) => {
   const { id } = req.params;
   const { text } = req.body;
-  const { data: msg } = await supabase.from('messages').select('*').eq('id', id).single();
-  if (!msg) return res.status(404).json({ error: 'Сообщение не найдено' });
-  if (msg.from_user !== req.userId) return res.status(403).json({ error: 'Нельзя редактировать чужое сообщение' });
   await supabase.from('messages').update({ text }).eq('id', id);
   res.json({ ok: true });
 });
 
 app.delete('/api/messages/:id', auth, async (req, res) => {
   const { id } = req.params;
-  const { data: msg } = await supabase.from('messages').select('*').eq('id', id).single();
-  if (!msg) return res.status(404).json({ error: 'Сообщение не найдено' });
-  if (msg.from_user !== req.userId) return res.status(403).json({ error: 'Нельзя удалить чужое сообщение' });
   await supabase.from('messages').delete().eq('id', id);
   res.json({ ok: true });
 });
 
-// 🆕 ОЧИСТКА ЧАТА
 app.delete('/api/messages/clear/:userId', auth, async (req, res) => {
   const { userId } = req.params;
   await supabase
@@ -207,62 +184,82 @@ app.delete('/api/messages/clear/:userId', auth, async (req, res) => {
   res.json({ ok: true });
 });
 
-// ========== КАНАЛЫ ==========
-app.get('/api/channels', auth, async (req, res) => {
-  const { data: channels, error } = await supabase
-    .from('channels')
+// ========== ГРУППЫ ==========
+app.get('/api/groups', auth, async (req, res) => {
+  const { data: groups, error } = await supabase
+    .from('groups')
     .select('*');
   if (error) return res.status(500).json({ error: error.message });
-  res.json(channels);
+  res.json(groups);
 });
 
-app.post('/api/channels', auth, async (req, res) => {
+app.post('/api/groups', auth, async (req, res) => {
   const { name, description, avatar } = req.body;
-  const { data: channel, error } = await supabase
-    .from('channels')
+  const { data: group, error } = await supabase
+    .from('groups')
     .insert([{ name, description, avatar, owner_id: req.userId }])
     .select()
     .single();
   if (error) return res.status(500).json({ error: error.message });
   await supabase
-    .from('channel_subscribers')
-    .insert([{ channel_id: channel.id, user_id: req.userId, role: 'owner' }]);
-  res.json(channel);
+    .from('group_members')
+    .insert([{ group_id: group.id, user_id: req.userId, role: 'owner' }]);
+  res.json(group);
 });
 
-app.post('/api/channels/:id/subscribe', auth, async (req, res) => {
+app.get('/api/groups/:id/members', auth, async (req, res) => {
   const { id } = req.params;
+  const { data: members, error } = await supabase
+    .from('group_members')
+    .select('user_id, role, joined_at')
+    .eq('group_id', id);
+  if (error) return res.status(500).json({ error: error.message });
+  res.json(members);
+});
+
+app.post('/api/groups/:id/members', auth, async (req, res) => {
+  const { id } = req.params;
+  const { userId } = req.body;
   const { data: existing } = await supabase
-    .from('channel_subscribers')
+    .from('group_members')
     .select('*')
-    .eq('channel_id', id)
-    .eq('user_id', req.userId);
+    .eq('group_id', id)
+    .eq('user_id', userId);
   if (existing && existing.length > 0) return res.json({ ok: true });
   await supabase
-    .from('channel_subscribers')
-    .insert([{ channel_id: id, user_id: req.userId, role: 'subscriber' }]);
+    .from('group_members')
+    .insert([{ group_id: id, user_id: userId, role: 'member' }]);
   res.json({ ok: true });
 });
 
-// Сообщения каналов
-app.get('/api/channels/:id/messages', auth, async (req, res) => {
+app.delete('/api/groups/:id/members/:userId', auth, async (req, res) => {
+  const { id, userId } = req.params;
+  await supabase
+    .from('group_members')
+    .delete()
+    .eq('group_id', id)
+    .eq('user_id', userId);
+  res.json({ ok: true });
+});
+
+app.get('/api/groups/:id/messages', auth, async (req, res) => {
   const { id } = req.params;
   const { data: messages, error } = await supabase
     .from('messages')
     .select('*')
-    .eq('channel_id', id)
-    .eq('is_channel', true)
+    .eq('group_id', id)
+    .eq('is_group', true)
     .order('createdat', { ascending: true });
   if (error) return res.status(500).json({ error: error.message });
   res.json(messages);
 });
 
-app.post('/api/channels/:id/messages', auth, async (req, res) => {
+app.post('/api/groups/:id/messages', auth, async (req, res) => {
   const { id } = req.params;
   const { text, image } = req.body;
   const { data: msg, error } = await supabase
     .from('messages')
-    .insert([{ from_user: req.userId, text, image, is_channel: true, channel_id: id }])
+    .insert([{ from_user: req.userId, text, image, is_group: true, group_id: id }])
     .select()
     .single();
   if (error) return res.status(500).json({ error: error.message });
